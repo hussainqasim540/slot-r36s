@@ -21,6 +21,11 @@ pub const STICK_DEADZONE: i32 = 2048;
 
 pub const ODROIDGO3_PAD: &str = "GO-Super Gamepad";
 
+/// The R36S joypad as a mainline kernel with ROCKNIX's
+/// `rocknix-singleadc-joypad` driver names it (ArkOS' BSP kernel calls the
+/// same pad `GO-Super Gamepad`).
+pub const R36S_PAD: &str = "r36s_Gamepad";
+
 const ODROIDGO3_DEADZONE_PERCENT: i32 = 40;
 
 const LEFT_STICK_TARGETS: [&str; 7] = [
@@ -42,12 +47,14 @@ pub enum Layout {
     #[default]
     Anbernic,
     OdroidGo3,
+    R36s,
 }
 
 impl Layout {
     pub fn for_name(name: &str) -> Layout {
         match name.trim() {
             ODROIDGO3_PAD => Layout::OdroidGo3,
+            R36S_PAD => Layout::R36s,
             _ => Layout::Anbernic,
         }
     }
@@ -55,13 +62,15 @@ impl Layout {
     pub fn stick_axes(self) -> (u16, u16) {
         match self {
             Layout::Anbernic => (ABS_LSX, ABS_LSY),
-            Layout::OdroidGo3 => (ABS_X, ABS_Y),
+            Layout::OdroidGo3 | Layout::R36s => (ABS_X, ABS_Y),
         }
     }
 
     pub fn stick_deadzone(self, axis_max: Option<i32>) -> i32 {
         match (self, axis_max) {
-            (Layout::OdroidGo3, Some(max)) if max > 0 => max * ODROIDGO3_DEADZONE_PERCENT / 100,
+            (Layout::OdroidGo3 | Layout::R36s, Some(max)) if max > 0 => {
+                max * ODROIDGO3_DEADZONE_PERCENT / 100
+            }
             _ => STICK_DEADZONE,
         }
     }
@@ -177,6 +186,19 @@ pub fn code_to_btn_in(layout: Layout, code: u16) -> Option<Btn> {
     match layout {
         Layout::Anbernic => code_to_btn(code),
         Layout::OdroidGo3 => odroidgo3_btn(code),
+        Layout::R36s => r36s_btn(code),
+    }
+}
+
+/// Same pad as `odroidgo3_btn`, but the mainline driver sends SELECT, START
+/// and FN as BTN_SELECT, BTN_START and BTN_MODE instead of BTN_TRIGGER_HAPPY.
+fn r36s_btn(code: u16) -> Option<Btn> {
+    match code {
+        0x13a => Some(Btn::Select),
+        0x13b => Some(Btn::Start),
+        0x13c => Some(Btn::Menu),
+        0x2c0 | 0x2c1 | 0x2c4 => None,
+        _ => odroidgo3_btn(code),
     }
 }
 

@@ -317,6 +317,20 @@ fn the_node_carrying_only_the_power_key_is_opened() {
 }
 
 #[test]
+fn the_mainline_r36s_pad_is_opened() {
+    let d = tempfile::tempdir().unwrap();
+    let (dev, sys) = (d.path().join("dev/input"), d.path().join("sys/class/input"));
+    write(&dev.join("event3"), "");
+    write(&sys.join("event3/device/name"), "r36s_Gamepad\n");
+    // BTN_DPAD_UP..RIGHT (0x220..0x223) and BTN_SOUTH..BTN_THUMBR (0x130..0x13e).
+    write(
+        &sys.join("event3/device/capabilities/key"),
+        "f00000000 0 0 0 7fff000000000000 0 0 0 0\n",
+    );
+    assert_eq!(pick_devices(&dev, &sys), vec![dev.join("event3")]);
+}
+
+#[test]
 fn a_hat_axis_is_traced_as_the_axis_it_is() {
     let line = slot::input::trace::event_line(
         "event1",
@@ -459,6 +473,73 @@ mod odroidgo3 {
         assert!(hat.feed(abs(0x00, 500)).is_empty());
         assert_eq!(hat.feed(abs(0x00, 1000)), vec![RawEvent::Down(Btn::Right)]);
         assert_eq!(hat.feed(abs(0x03, 1500)), Vec::<RawEvent>::new());
+        assert_eq!(hat.feed(abs(0x01, -1500)), vec![RawEvent::Down(Btn::Up)]);
+    }
+}
+
+mod r36s_mainline {
+    use super::*;
+    use slot::input::evdev::{to_raw_in, Ev, Hat, Layout, ODROIDGO3_PAD, R36S_PAD};
+
+    const EV_ABS: u16 = 0x03;
+
+    fn press(code: u16) -> Option<RawEvent> {
+        decode(&packet(EV_KEY, code, 1)).and_then(|ev| to_raw_in(Layout::R36s, ev))
+    }
+
+    #[test]
+    fn the_rocknix_pad_name_picks_its_own_layout() {
+        assert_eq!(Layout::for_name(R36S_PAD), Layout::R36s);
+        assert_eq!(Layout::for_name("r36s_Gamepad\n"), Layout::R36s);
+        assert_eq!(Layout::for_name(ODROIDGO3_PAD), Layout::OdroidGo3);
+    }
+
+    #[test]
+    fn dpad_face_buttons_and_shoulders_match_arkos() {
+        assert_eq!(press(0x220), Some(RawEvent::Down(Btn::Up)));
+        assert_eq!(press(0x221), Some(RawEvent::Down(Btn::Down)));
+        assert_eq!(press(0x222), Some(RawEvent::Down(Btn::Left)));
+        assert_eq!(press(0x223), Some(RawEvent::Down(Btn::Right)));
+        assert_eq!(press(0x131), Some(RawEvent::Down(Btn::A)));
+        assert_eq!(press(0x130), Some(RawEvent::Down(Btn::B)));
+        assert_eq!(press(0x133), Some(RawEvent::Down(Btn::X)));
+        assert_eq!(press(0x134), Some(RawEvent::Down(Btn::Y)));
+        assert_eq!(press(0x136), Some(RawEvent::Down(Btn::L1)));
+        assert_eq!(press(0x137), Some(RawEvent::Down(Btn::R1)));
+        assert_eq!(press(0x138), Some(RawEvent::Down(Btn::L2)));
+        assert_eq!(press(0x139), Some(RawEvent::Down(Btn::R2)));
+    }
+
+    #[test]
+    fn select_start_and_fn_are_btn_select_start_mode() {
+        assert_eq!(press(0x13a), Some(RawEvent::Down(Btn::Select)));
+        assert_eq!(press(0x13b), Some(RawEvent::Down(Btn::Start)));
+        assert_eq!(press(0x13c), Some(RawEvent::Down(Btn::Menu)));
+        for arkos_only in [0x2c0, 0x2c1, 0x2c4] {
+            assert_eq!(press(arkos_only), None, "{arkos_only:#x}");
+        }
+    }
+
+    #[test]
+    fn stick_clicks_and_volume_and_power() {
+        assert_eq!(press(0x13d), None);
+        assert_eq!(press(0x13e), None);
+        assert_eq!(press(115), Some(RawEvent::Down(Btn::VolUp)));
+        assert_eq!(press(114), Some(RawEvent::Down(Btn::VolDown)));
+        assert_eq!(press(116), Some(RawEvent::Down(Btn::Power)));
+    }
+
+    #[test]
+    fn the_left_stick_is_abs_x_y_with_a_relative_deadzone() {
+        // rocknix-singleadc-joypad: ±(1800 / 2) mV * button-adc-scale 2.
+        let dead = Layout::R36s.stick_deadzone(Some(1800));
+        assert_eq!(dead, 720);
+        let mut hat = Hat::for_layout(Layout::R36s, dead);
+        hat.steer_with_stick(true);
+        let abs = |code, value| Ev { kind: EV_ABS, code, value };
+        assert!(hat.feed(abs(0x00, 500)).is_empty());
+        assert_eq!(hat.feed(abs(0x00, 1000)), vec![RawEvent::Down(Btn::Right)]);
+        assert!(hat.feed(abs(0x03, 1500)).is_empty());
         assert_eq!(hat.feed(abs(0x01, -1500)), vec![RawEvent::Down(Btn::Up)]);
     }
 }
