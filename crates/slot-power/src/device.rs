@@ -6,6 +6,7 @@ use std::io::Write;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::{Battery, Charge, LedState, Platform, RepairResult};
@@ -110,6 +111,11 @@ pub struct DevicePlatform {
     motor: Option<Motor>,
     led: Option<Led>,
     jack: Option<PathBuf>,
+    // The jack's event device, kept open between reads. Closing an evdev
+    // node waits for an RCU grace period (input_close_device), 30 to 40 ms
+    // on the mainline kernel, and the headphone poll runs on the main loop
+    // twice a second: it cost a frame each time.
+    jack_file: Mutex<Option<fs::File>>,
 }
 
 impl DevicePlatform {
@@ -159,6 +165,7 @@ impl DevicePlatform {
             motor,
             led,
             jack,
+            jack_file: Mutex::new(None),
         }
     }
 
@@ -484,15 +491,14 @@ fn headphone_switch(sysfs: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
-fn jack_plugged(dev: &Path) -> Option<bool> {
-    let file = fs::File::open(dev).ok()?;
+fn jack_plugged(file: &fs::File) -> Option<bool> {
     let mut bits = [0u8; 8];
     let got = unsafe { ioctl(file.as_raw_fd(), EVIOCGSW_8, bits.as_mut_ptr() as *mut c_void) };
     (got >= 0).then_some(bits[0] & (1 << SW_HEADPHONE_INSERT) != 0)
 }
 
 #[cfg(not(unix))]
-fn jack_plugged(_dev: &Path) -> Option<bool> {
+fn jack_plugged(_file: &fs::File) -> Option<bool> {
     None
 }
 
@@ -516,8 +522,15 @@ fn backlight_value(step: u8, max: u32) -> u32 {
 
 impl Platform for DevicePlatform {
     fn headphones(&self) -> bool {
-        if let Some(plugged) = self.jack.as_deref().and_then(jack_plugged) {
-            return plugged;
+        if let Some(dev) = self.jack.as_deref() {
+            let mut open = self.jack_file.lock().unwrap_or_else(|e| e.into_inner());
+            if open.is_none() {
+                *open = fs::File::open(dev).ok();
+            }
+            match open.as_ref().and_then(jack_plugged) {
+                Some(plugged) => return plugged,
+                None => *open = None,
+            }
         }
         fs::read_to_string(self.sysfs.join("kernel/debug/gpio")).is_ok_and(|g| headphones_in(&g))
     }

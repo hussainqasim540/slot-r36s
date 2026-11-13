@@ -1,12 +1,33 @@
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use slot_store::Platform;
 
 pub const BEZELS: &str = "System/bezels";
 pub const GAME_BEZELS: &str = "Bezels";
 
+/// The card's bezels for a platform, sorted. The quick menu and the game
+/// bezel ask for them every frame; reading the folder each time cost an
+/// open, two getdents and a close on the card per call (2176 opens in 20 s
+/// on LightOS), so the list is kept until the folder's mtime changes.
 pub fn list(root: &Path, platform: Platform) -> Vec<String> {
+    static LISTED: Mutex<Vec<(PathBuf, SystemTime, Vec<String>)>> = Mutex::new(Vec::new());
     let dir = root.join(GAME_BEZELS).join(platform.hardware().dir_name());
+    let Some(mtime) = std::fs::metadata(&dir).and_then(|m| m.modified()).ok() else {
+        return Vec::new();
+    };
+    let mut listed = LISTED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, _, files)) = listed.iter().find(|(d, t, _)| *d == dir && *t == mtime) {
+        return files.clone();
+    }
+    let files = scan(&dir);
+    listed.retain(|(d, _, _)| *d != dir);
+    listed.push((dir, mtime, files.clone()));
+    files
+}
+
+fn scan(dir: &Path) -> Vec<String> {
     let mut files: Vec<String> = std::fs::read_dir(dir)
         .ok()
         .into_iter()
