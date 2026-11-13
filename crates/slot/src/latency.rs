@@ -5,6 +5,13 @@ use std::time::Instant;
 pub const TRACE_VAR: &str = "SLOT_TRACE_LATENCY";
 pub const FLAG_FILE: &str = "System/trace-latency.on";
 
+/// SLOT_TRACE_FRAMES: the main loop prints the phases of every frame that
+/// missed a latch, and the emulator thread its costs every 600 frames.
+pub fn frames() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("SLOT_TRACE_FRAMES").is_some_and(|v| v != "0"))
+}
+
 static READ: AtomicU64 = AtomicU64::new(0);
 static APPLIED: AtomicU64 = AtomicU64::new(0);
 static EMU: AtomicU64 = AtomicU64::new(0);

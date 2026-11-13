@@ -161,6 +161,9 @@ pub fn run() {
     frontend.drive_emulator();
     let mut pacer = Pacer::new();
     let (mut frames, mut missed, mut early, mut stale) = (0u32, 0u32, 0u32, 0u32);
+    let trace_frames = slot::latency::frames();
+    let mut last_swap: Option<Instant> = None;
+    let mut prev = Phases::default();
     loop {
         pacer.wait();
         let began = Instant::now();
@@ -181,7 +184,9 @@ pub fn run() {
             frontend.stop();
             return;
         }
+        let advanced = Instant::now();
         let late = frontend.step_emulator(pacer.period, STEP_TIMEOUT);
+        let stepped = Instant::now();
         frontend.render(&mut compositor, window);
         let swap = Instant::now();
         let work = swap - began;
@@ -193,6 +198,27 @@ pub fn run() {
         let swap_took = swap.elapsed();
         slot::latency::swapped(swap_took.as_secs_f64() * 1000.0);
         let dropped = pacer.swapped(work, swap_took > Duration::from_millis(1));
+        if trace_frames {
+            let swapped = Instant::now();
+            let this = Phases {
+                idle: last_swap.map_or(Duration::ZERO, |l| began.saturating_duration_since(l)),
+                advance: advanced - began,
+                step: stepped - advanced,
+                render: swap - stepped,
+                swap: swap_took,
+            };
+            if dropped {
+                let gap = last_swap.map_or(Duration::ZERO, |l| swapped - l);
+                eprintln!(
+                    "slot: miss: {:.1} ms between flips; this {}; before {}",
+                    gap.as_secs_f64() * 1e3,
+                    this.report(),
+                    prev.report()
+                );
+            }
+            prev = this;
+            last_swap = Some(swapped);
+        }
         frames += 1;
         missed += u32::from(dropped);
         early += u32::from(swap_took > pacer.period / 2);
@@ -241,5 +267,31 @@ fn sync_log_writes() {
             }
             synced = st.st_size;
         }
+    }
+}
+
+/// One frame of the main loop, for SLOT_TRACE_FRAMES: the wait before it,
+/// input and the frontend, waiting for the emulator's frame, drawing, and
+/// the swap (the flip it waits for).
+#[derive(Default, Clone, Copy)]
+struct Phases {
+    idle: Duration,
+    advance: Duration,
+    step: Duration,
+    render: Duration,
+    swap: Duration,
+}
+
+impl Phases {
+    fn report(&self) -> String {
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
+        format!(
+            "idle {:.1} advance {:.1} step {:.1} render {:.1} swap {:.1}",
+            ms(self.idle),
+            ms(self.advance),
+            ms(self.step),
+            ms(self.render),
+            ms(self.swap)
+        )
     }
 }

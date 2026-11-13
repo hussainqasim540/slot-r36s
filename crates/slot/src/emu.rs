@@ -608,6 +608,7 @@ impl Worker {
         let mut cable_core = Duration::ZERO;
         let mut cable_wait = Duration::ZERO;
         let mut ff = (0u32, 0u32, Duration::ZERO, Instant::now());
+        let mut costs = FrameCosts::default();
         let mut owed = 0u32;
         while !self.shared.stop.load(Ordering::Relaxed) {
             for cmd in self.cmds.try_iter() {
@@ -821,6 +822,7 @@ impl Worker {
                 flush_outbound(&mut transport, &link);
                 self.publish(core.video_xrgb8888());
                 self.frame_done(served);
+                let published = Instant::now();
 
                 since_snapshot += 1;
                 if cable.is_some()
@@ -838,6 +840,7 @@ impl Worker {
                             .store(rewind.fill(), Ordering::Relaxed);
                     }
                 }
+                let snapped = Instant::now();
 
                 let audio = core.take_audio();
                 if speed == Speed::Normal || ff_sound {
@@ -863,6 +866,18 @@ impl Worker {
                         eprintln!(
                             "slot: audio: {queued}/{target} queued, {dropped} dropped, {starved} starved, locked {lock} at {scale:.5}"
                         );
+                    }
+                }
+                if crate::latency::frames() {
+                    costs.add(
+                        core_time,
+                        published.saturating_duration_since(began + core_time),
+                        snapped - published,
+                        snapped.elapsed(),
+                    );
+                    if costs.frames == 600 {
+                        eprintln!("slot: emu costs: {}", costs.report());
+                        costs = FrameCosts::default();
                     }
                 }
             }
@@ -1375,5 +1390,45 @@ mod tests {
         assert_eq!(link.take_inbound().as_deref(), Some(&b"one"[..]));
         assert_eq!(link.take_inbound().as_deref(), Some(&b"two"[..]));
         assert_eq!(link.take_inbound(), None);
+    }
+}
+
+/// The emulator thread's costs over a run of frames, for SLOT_TRACE_FRAMES:
+/// the core, publishing the frame, the rewind snapshot and the audio, each
+/// as its mean and its worst, and how many frames took over 8 ms in all.
+#[derive(Default)]
+struct FrameCosts {
+    frames: u32,
+    over: u32,
+    sum: [Duration; 4],
+    max: [Duration; 4],
+}
+
+impl FrameCosts {
+    fn add(&mut self, core: Duration, publish: Duration, snapshot: Duration, audio: Duration) {
+        let parts = [core, publish, snapshot, audio];
+        for (i, d) in parts.iter().enumerate() {
+            self.sum[i] += *d;
+            self.max[i] = self.max[i].max(*d);
+        }
+        self.frames += 1;
+        self.over += u32::from(parts.iter().sum::<Duration>() > Duration::from_millis(8));
+    }
+
+    fn report(&self) -> String {
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
+        let n = self.frames.max(1);
+        let names = ["core", "publish", "snapshot", "audio"];
+        let parts: Vec<String> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| format!("{name} {:.2}/{:.1}", ms(self.sum[i] / n), ms(self.max[i])))
+            .collect();
+        format!(
+            "{} frames, {} over 8 ms; mean/max ms: {}",
+            self.frames,
+            self.over,
+            parts.join(", ")
+        )
     }
 }
